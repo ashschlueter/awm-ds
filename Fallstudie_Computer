@@ -1,0 +1,225 @@
+---
+title: "Computer Fallstudie"
+author: "Ashley-Ann Schlüter"
+date: "2023-04-17"
+output: html_document
+---
+
+# Forschungsfrage und Hintergrund
+
+Innerhalb dieser Analyse werden wir verschiedene Computer untersuchen. Dafür stehen uns die Daten über den Hersteller, über die Taktgeschwindigkeit, über die Größen der Festplatte, des Ram und des Bildschirms, über die Anzahl der Preisanzeigen sowie Informationen über das Vorhandensein einer CD-Rom und eines Multi-Media-Kits zur Verfügung.
+
+Unser Ziel ist die möglichst genaue Vorhersage des Computerpreises (in US-Dollar). Daraus ergibt sich unsere leitende Forschungsfrage:
+
+1. Wie gut lässt sich der Verkaufswert eines Computers vorhersagen? Als Verkaufswert definieren wir die Höhe des Preises.
+
+2. Welche Faktoren sind nützlich für die Güte der Vorhersage?
+
+Für die Beantwortung dieser Fragestellungen führen wir zunächst eine explorative Datenanalyse durch, um die Daten besser einordnen zu können. Daraufhin werden wir ein Modell erstellen.
+ 
+
+# Vorbereitung
+## Pakete laden
+
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(easystats)
+library(yardstick)
+library(readr)
+library(skimr)
+library(corrplot)
+```
+
+
+## Daten laden
+
+```{r}
+Computers <- read_csv("https://vincentarelbundock.github.io/Rdatasets/csv/Ecdat/Computers.csv")
+```
+
+
+# Explorative Datenanalyse
+## Überblick über die Kennzahlen
+
+```{r}
+skim(Computers)
+```
+
+## Fehlende Werte
+
+Auch wenn wir bereits - dank des schnellen Überblicks durch skim() - wissen, dass der Datensatz keine fehlenden Werte beinhaltet, überprüfen wir dies dennoch kurz. Sicher ist sicher :)
+
+```{r}
+Computers %>%
+  summarise(across(everything(), ~ sum(is.na(.))))
+```
+
+
+## Verteilung der Ouput-Varibale
+
+```{r}
+price_histogramm <- Computers %>%
+  ggplot() +
+  aes(x = price) +
+  geom_histogram()
+
+price_histogramm
+```
+
+```{r}
+Computers %>%
+  ggplot(aes(x = price)) +
+  geom_histogram(aes(y = stat(density))) +
+  geom_density(col = "red")
+```
+
+Log-Transformation:
+
+```{r}
+Computers <- Computers %>%
+  mutate(price = log10(price))
+
+price_histogramm <- Computers %>%
+  ggplot() +
+  aes(x = price) +
+  geom_histogram()
+
+price_histogramm
+```
+
+
+## Verteilung der Input-Variablen
+
+Wir vollziehen eine schnelle Veränderung. Zahlen gefallen mir besser als Wörter:
+
+```{r}
+computers <- Computers %>%
+  mutate(cd = case_when(cd == "yes" ~ 1, cd == "no" ~ 0)) %>%
+  mutate(multi = case_when(multi == "yes" ~ 1, multi == "no" ~ 0)) %>%
+  mutate(premium = case_when(premium == "yes" ~ 1, premium == "no" ~ 0))
+```
+
+
+Visualisierungen sind toll. Bitte mehr davon :)
+
+```{r}
+computers %>%
+  mutate(across(where(is.integer), as.numeric)) %>%  
+  select(where(is.numeric)) %>%  
+  pivot_longer(everything(), names_to = "variable") %>%  
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~ variable, scales = "free")
+```
+
+## Korrelationen
+
+```{r}
+korrelation <- subset(computers, select = c(price, speed, hd, ram, screen, cd, multi, premium, ads, trend))
+korrelation_m <- cor(korrelation)
+korrelation_p <- cor.mtest(korrelation)
+
+corrplot(korrelation_m, method = "pie", type = "lower")
+corrplot(korrelation_m, p.mat = korrelation_p$p, method = "pie", type = "lower")
+```
+
+
+# Modellierung
+
+## Rezept, Modell und Workflow definieren
+
+Rezept:
+
+```{r}
+simple_computers <-
+  recipe(price ~ speed + hd + ram + screen, data = computers)
+
+print(simple_computers)
+```
+
+
+Modell:
+
+```{r}
+knn_model <- nearest_neighbor(
+  mode = "regression",
+  neighbors = tune())
+```
+
+
+Workflow:
+
+```{r}
+computer_workflow <-
+  workflow() %>%
+  add_model(knn_model) %>%
+  add_recipe(simple_computers)
+```
+
+
+## Train- und Test-Sample
+
+```{r}
+data_split <- initial_split(computers, strata = "price")
+
+computers_train <- training(data_split)
+computers_test <- testing(data_split)
+```
+
+
+## Kreuzvalidierung 
+
+```{r}
+computers_folds_rep <- vfold_cv(computers, 
+                           strata = "price", 
+                           v = 10,
+                           repeats = 10)
+
+computers_folds_rep
+```
+
+```{r}
+computers_folds_rep %>% pluck(1, 1)
+```
+
+## Tuning
+
+```{r}
+computers_grid_search <-
+  tune_grid(
+    object = computer_workflow,
+    resamples = computers_folds_rep,
+    grid = 5)
+
+computers_grid_search
+```
+
+```{r}
+computers_grid_search %>% 
+  collect_metrics()
+```
+```{r}
+bester_modellkandidat <- select_best(computers_grid_search)
+bester_modellkandidat
+```
+
+## Workflow finalisieren
+
+```{r}
+computer_workflow_final <- finalize_workflow(computer_workflow, bester_modellkandidat)
+computer_workflow_final
+```
+
+## Berechnung
+
+```{r}
+computer_last_fit <- last_fit(computer_workflow_final, data_split)
+```
+
+
+## Modellgüte
+
+```{r}
+collect_metrics(computer_last_fit)
+```
